@@ -25,17 +25,67 @@ import socketserver
 # run: python freetests.py
 
 # try: curl -v -X GET http://127.0.0.1:8080/
-
+HOST, PORT = "localhost", 8080
+ROOT_DIR = 'www'
+mime_types = {
+    'html': 'text/html',
+    'css': 'text/css',
+    'binary': 'application/octet-stream'
+}
 
 class MyWebServer(socketserver.BaseRequestHandler):
     
     def handle(self):
         self.data = self.request.recv(1024).strip()
-        print ("Got a request of: %s\n" % self.data)
-        self.request.sendall(bytearray("OK",'utf-8'))
+        request = self.parse_request(self.data.decode('utf-8'))
+        if request['method'].upper() != 'GET': # handle method not allowed
+            self.request.sendall(bytearray('HTTP/1.1 405 Method Not Allowed', 'utf-8'))
+            return 
+        
+        header = 'HTTP/1.1 200 OK\nContent-Type: ' #  default 200 ok header
+        filetype = request['file'].split('.')[-1]
+        if not filetype.isalpha(): # check if need to redirect and give 301
+            try:
+                host = request['host']
+            except KeyError:
+                host = f'{HOST}:{PORT}'
+            self.request.sendall(bytearray(f"HTTP/1.1 301 Moved Permanently\nLocation: http://{host}{request['file']}/", 'utf-8'))
+            return
+
+        # adjust header according to file type 
+        if filetype == 'html':
+            header += mime_types['html']
+        elif filetype == 'css':
+            header += mime_types['css']
+        else:
+            header += mime_types['binary']
+
+        try:
+            wanted_file = open(f"{ROOT_DIR}{request['file']}")
+        except FileNotFoundError:
+            self.request.sendall(bytearray('HTTP/1.1 404 Not Found', 'utf-8'))     
+            return 
+
+        self.request.sendall(bytearray('{}\n\n{}'.format(header, wanted_file.read()), 'utf-8'))
+
+    def parse_request(self, request_raw: str):
+        headers = request_raw.replace('\r','').split('\n') # '\r\n' may be used for newline, remove '\r'
+
+        request = {}
+        method = headers[0].split(' ')
+        request['method'] = method[0]
+        request['file'] = method[1].replace('../','') # for no exploiting
+        if request['file'][-1]=='/':
+            request['file'] += 'index.html'  # ending with / default gives index.html
+
+        for header in headers[1:]: # get host
+            if header.startswith('Host:'):
+                request['host'] = header.split(' ')[1]
+                break; 
+
+        return request
 
 if __name__ == "__main__":
-    HOST, PORT = "localhost", 8080
 
     socketserver.TCPServer.allow_reuse_address = True
     # Create the server, binding to localhost on port 8080
